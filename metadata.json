@@ -1,0 +1,6 @@
+{
+  "name": "VaaniCal — Multilingual Voice Calendar Agent",
+  "description": "Real-time voice AI scheduling assistant powered by Gemini Live and Google Calendar across Hindi, Bhojpuri, Tamil, Marathi, Telugu, and English with low-latency VAD.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
