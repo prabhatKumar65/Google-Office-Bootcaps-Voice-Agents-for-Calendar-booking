@@ -309,7 +309,7 @@ export const VoiceAgentConsole: React.FC<VoiceAgentConsoleProps> = ({
               >
                 <div className="mb-1 flex items-center gap-2 text-[11px] text-slate-500">
                   <span className="font-medium text-slate-700">
-                    {isUser ? 'Client / You' : 'VaaniCal Agent'}
+                    {isUser ? 'Client / You' : 'Prabhat Personal AI Agent'}
                   </span>
                   <span aria-hidden="true">·</span>
                   <span className="font-mono tabular-nums">{entry.timestamp}</span>

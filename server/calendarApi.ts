@@ -156,7 +156,7 @@ export async function createCalendarEvent(
     query = '?conferenceDataVersion=1';
     body.conferenceData = {
       createRequest: {
-        requestId: `vaanical-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        requestId: `prabhat-ai-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         conferenceSolutionKey: { type: 'hangoutsMeet' },
       },
     };

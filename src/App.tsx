@@ -1,5 +1,4 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import type { User } from 'firebase/auth';
 import { BookingModal } from './components/BookingModal';
 import { CalendarPanel, type DateRangeFilter } from './components/CalendarPanel';
 import { ConfirmationModal } from './components/ConfirmationModal';
@@ -7,6 +6,7 @@ import { Sidebar } from './components/Sidebar';
 import { VoiceAgentConsole } from './components/VoiceAgentConsole';
 import { VoiceAudioEngine } from './lib/audioEngine';
 import {
+  type AuthUser,
   clearAccessToken,
   formatFirebaseAuthError,
   getAccessToken,
@@ -63,7 +63,7 @@ export default function App() {
 
   // Auth & Calendar state
   const [needsAuth, setNeedsAuth] = useState(true);
-  const [user, setUser] = useState<User | null>(null);
+  const [user, setUser] = useState<AuthUser | null>(null);
   const [accessToken, setAccessToken] = useState<string | null>(null);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
   const [authError, setAuthError] = useState<{
@@ -169,6 +169,17 @@ export default function App() {
           const profile = await profileRes.json();
           if (profile?.timeZone) {
             setCalendarTimeZone(profile.timeZone);
+          }
+          if (profile?.id || profile?.summary) {
+            setUser((prev) => ({
+              email: prev?.email || (typeof profile.id === 'string' ? profile.id : null),
+              displayName:
+                prev?.displayName && prev.displayName !== 'Google Calendar'
+                  ? prev.displayName
+                  : typeof profile.summary === 'string' && profile.summary !== profile.id
+                    ? profile.summary
+                    : prev?.displayName || 'Google Calendar',
+            }));
           }
         }
 

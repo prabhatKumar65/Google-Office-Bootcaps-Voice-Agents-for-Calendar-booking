@@ -1,6 +1,6 @@
 import React from 'react';
 import { LogOut, Mic, ShieldCheck, Sliders, Volume2 } from 'lucide-react';
-import type { User } from 'firebase/auth';
+import type { AuthUser } from '../lib/firebaseAuth';
 import { LANGUAGE_OPTIONS, VOICE_OPTIONS } from '../lib/languages';
 import type {
   AgentConnectionState,
@@ -11,7 +11,7 @@ import type {
 import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface SidebarProps {
-  user: User | null;
+  user: AuthUser | null;
   needsAuth: boolean;
   isLoggingIn: boolean;
   authError?: {
@@ -66,11 +66,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   return (
     <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-[300px] lg:border-b-0 lg:border-r">
       {/* Brand Zone */}
-      <div className="flex h-16 items-center justify-between border-b border-slate-200 px-5">
-        <span className="font-display text-xl font-bold tracking-tight text-slate-900 whitespace-nowrap shrink-0">
-          VaaniCal
+      <div className="flex min-h-16 items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
+        <span className="font-display text-base font-bold tracking-tight text-slate-900 leading-tight">
+          Prabhat Personal AI Agent
         </span>
-        <span className="font-mono text-xs text-slate-500 tabular-nums whitespace-nowrap">
+        <span className="font-mono text-[11px] text-slate-500 tabular-nums whitespace-nowrap shrink-0">
           {calendarTimeZone}
         </span>
       </div>
@@ -129,7 +129,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     {user.displayName || 'Connected Account'}
                   </div>
                   <div className="truncate text-xs text-slate-500">
-                    {user.email}
+                    {user.email || 'Primary calendar synced'}
                   </div>
                 </div>
                 <button

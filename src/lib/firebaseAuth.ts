@@ -12,7 +12,6 @@ import {
   onAuthStateChanged,
   signInWithPopup,
   signInWithRedirect,
-  User,
 } from 'firebase/auth';
 import firebaseConfig from '../../firebase-applet-config.json';
 
@@ -20,6 +19,47 @@ export const CALENDAR_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
   'https://www.googleapis.com/auth/calendar.readonly',
 ];
+
+export interface AuthUser {
+  displayName: string | null;
+  email: string | null;
+}
+
+interface GisTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+  scope?: string;
+  token_type?: string;
+  error?: string;
+  error_description?: string;
+}
+
+interface GisError {
+  type: 'popup_failed_to_open' | 'popup_closed' | 'unknown';
+  message?: string;
+}
+
+interface GisTokenClient {
+  requestAccessToken: (overrideConfig?: { prompt?: string }) => void;
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts?: {
+        oauth2?: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            callback: (response: GisTokenResponse) => void;
+            error_callback?: (error: GisError) => void;
+          }) => GisTokenClient;
+          revoke?: (token: string, done?: () => void) => void;
+        };
+      };
+    };
+  }
+}
 
 const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 
@@ -50,6 +90,8 @@ provider.setCustomParameters({
 let isSigningIn = false;
 // Store access token strictly in memory (never localStorage or sessionStorage).
 let cachedAccessToken: string | null = null;
+let cachedUser: AuthUser | null = null;
+let gsiLoadPromise: Promise<boolean> | null = null;
 
 export function isEmbeddedIframe(): boolean {
   if (typeof window === 'undefined') return false;
@@ -58,6 +100,66 @@ export function isEmbeddedIframe(): boolean {
   } catch {
     return true;
   }
+}
+
+export function ensureGsiLoaded(): Promise<boolean> {
+  if (typeof window === 'undefined') return Promise.resolve(false);
+  if (window.google?.accounts?.oauth2?.initTokenClient) {
+    return Promise.resolve(true);
+  }
+  if (gsiLoadPromise) return gsiLoadPromise;
+
+  gsiLoadPromise = new Promise((resolve) => {
+    const existing = document.querySelector<HTMLScriptElement>(
+      'script[src*="accounts.google.com/gsi/client"]'
+    );
+
+    const checkReady = () => {
+      if (window.google?.accounts?.oauth2?.initTokenClient) {
+        resolve(true);
+        return true;
+      }
+      return false;
+    };
+
+    if (existing) {
+      if (checkReady()) return;
+      existing.addEventListener('load', () => resolve(checkReady()), { once: true });
+      existing.addEventListener('error', () => resolve(false), { once: true });
+      setTimeout(() => resolve(checkReady()), 4000);
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.onload = () => resolve(checkReady());
+    script.onerror = () => resolve(false);
+    document.head.appendChild(script);
+  });
+
+  return gsiLoadPromise;
+}
+
+async function fetchCalendarUserProfile(accessToken: string): Promise<AuthUser> {
+  try {
+    const res = await fetch('/api/calendar/profile', {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (res.ok) {
+      const profile = await res.json();
+      const email = typeof profile?.id === 'string' ? profile.id : null;
+      const summary = typeof profile?.summary === 'string' ? profile.summary : null;
+      return {
+        email,
+        displayName: summary && summary !== email ? summary : 'Google Calendar',
+      };
+    }
+  } catch {
+    // Non-fatal; fallback profile will be enriched on calendar sync
+  }
+  return { displayName: 'Google Calendar', email: null };
 }
 
 export function formatFirebaseAuthError(error: any): {
@@ -71,22 +173,32 @@ export function formatFirebaseAuthError(error: any): {
 
   switch (code) {
     case 'auth/popup-blocked':
+    case 'gis/popup_failed_to_open':
       return {
         code,
         suggestNewTab: inIframe,
         suggestRedirect: !inIframe,
         message: inIframe
-          ? 'The browser blocked the sign-in popup inside the embedded preview. Open the app in a new tab or allow popups for this site.'
-          : 'Sign-in popup was blocked by your browser. Allow popups or use redirect sign-in below.',
+          ? 'Your browser blocked the Google sign-in popup inside the embedded preview. Open the app in a new tab or allow popups for this site.'
+          : 'Google sign-in popup was blocked by your browser. Allow popups for this site and click Sign in with Google again.',
       };
     case 'auth/popup-closed-by-user':
+    case 'gis/popup_closed':
       return {
         code,
         suggestNewTab: inIframe,
-        suggestRedirect: !inIframe,
+        suggestRedirect: false,
         message: inIframe
-          ? 'Sign-in popup closed before delivering the Google token back to this embedded frame (often caused by browser third-party cookie/storage partitioning). Open the app in a new tab to complete Google sign-in.'
-          : 'Sign-in popup was closed before completing authentication. Finish the Google consent prompt without closing the window, or use redirect sign-in below.',
+          ? 'Google sign-in popup closed before returning your Calendar token. Open the app in a new tab to complete sign-in.'
+          : 'The Google sign-in popup was closed before completing consent. Keep the popup open until you finish granting Calendar access.',
+      };
+    case 'gis/access_denied':
+      return {
+        code,
+        suggestNewTab: false,
+        suggestRedirect: false,
+        message:
+          'Google Calendar access was declined. Approve Calendar permissions on the consent screen to continue.',
       };
     case 'auth/cancelled-popup-request':
       return {
@@ -101,7 +213,7 @@ export function formatFirebaseAuthError(error: any): {
         code,
         suggestNewTab: false,
         suggestRedirect: false,
-        message: `This domain (${window.location.hostname}) is not authorized in Firebase Authentication for project ${firebaseConfig.projectId}.`,
+        message: `This domain (${window.location.hostname}) is not authorized for Google Sign-In on project ${firebaseConfig.projectId}.`,
       };
     case 'auth/operation-not-allowed':
       return {
@@ -109,7 +221,7 @@ export function formatFirebaseAuthError(error: any): {
         suggestNewTab: false,
         suggestRedirect: false,
         message:
-          'Google sign-in provider is not enabled in Firebase Authentication for this project.',
+          'Google sign-in provider is not enabled for this project.',
       };
     case 'auth/internal-error':
     case 'auth/web-storage-unsupported':
@@ -118,8 +230,8 @@ export function formatFirebaseAuthError(error: any): {
         suggestNewTab: inIframe,
         suggestRedirect: !inIframe,
         message: inIframe
-          ? 'Browser third-party cookie or storage partitioning blocked the popup relay in this embedded frame. Open the app in a new tab to sign in.'
-          : 'Browser storage restriction prevented popup sign-in. Try redirect sign-in below.',
+          ? 'Browser third-party cookie or storage partitioning blocked the auth frame here. Open the app in a new tab to sign in.'
+          : 'Browser storage restriction prevented sign-in. Try opening the app in a standard browser window.',
       };
     case 'auth/network-request-failed':
       return {
@@ -133,7 +245,7 @@ export function formatFirebaseAuthError(error: any): {
       return {
         code: code || 'unknown',
         suggestNewTab: inIframe && (code.includes('popup') || code.includes('storage')),
-        suggestRedirect: !inIframe && code.includes('popup'),
+        suggestRedirect: false,
         message:
           error?.message ||
           'Google sign-in could not be completed. Please try again.',
@@ -142,10 +254,12 @@ export function formatFirebaseAuthError(error: any): {
 }
 
 export const initAuth = (
-  onAuthSuccess?: (user: User, token: string) => void,
+  onAuthSuccess?: (user: AuthUser, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  // Handle redirect completion only when running in a top-level tab
+  // Preload Google Identity Services script so sign-in clicks execute synchronously without popup blocking
+  void ensureGsiLoaded();
+
   if (!isEmbeddedIframe()) {
     void getRedirectResult(auth, browserPopupRedirectResolver)
       .then((result) => {
@@ -157,7 +271,11 @@ export const initAuth = (
           const token = credential?.accessToken || fallbackToken;
           if (token) {
             cachedAccessToken = token;
-            onAuthSuccess?.(result.user, token);
+            cachedUser = {
+              displayName: result.user.displayName,
+              email: result.user.email,
+            };
+            onAuthSuccess?.(cachedUser, token);
           }
         }
       })
@@ -166,51 +284,148 @@ export const initAuth = (
       });
   }
 
-  return onAuthStateChanged(auth, (user: User | null) => {
-    if (user) {
-      if (cachedAccessToken) {
-        onAuthSuccess?.(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        cachedAccessToken = null;
-        onAuthFailure?.();
-      }
-    } else {
+  return onAuthStateChanged(auth, (fbUser) => {
+    // Preserve an active in-memory GIS OAuth session even when Firebase user is null
+    if (cachedAccessToken) {
+      const resolvedUser: AuthUser = fbUser
+        ? { displayName: fbUser.displayName, email: fbUser.email }
+        : cachedUser || { displayName: 'Google Calendar', email: null };
+      onAuthSuccess?.(resolvedUser, cachedAccessToken);
+      return;
+    }
+
+    if (!isSigningIn) {
       cachedAccessToken = null;
+      cachedUser = null;
       onAuthFailure?.();
     }
   });
 };
 
+function requestGisTokenSync(): Promise<{ user: AuthUser; accessToken: string }> {
+  const oauth2 = window.google?.accounts?.oauth2;
+  const clientId = firebaseConfig.oAuthClientId;
+
+  if (!oauth2?.initTokenClient || !clientId) {
+    return Promise.reject(
+      Object.assign(new Error('Google Identity Services is not ready yet.'), {
+        code: 'gis/not-ready',
+      })
+    );
+  }
+
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finishError = (code: string, message: string) => {
+      if (settled) return;
+      settled = true;
+      reject(Object.assign(new Error(message), { code }));
+    };
+
+    try {
+      const tokenClient = oauth2.initTokenClient({
+        client_id: clientId,
+        scope: CALENDAR_SCOPES.join(' '),
+        callback: (response: GisTokenResponse) => {
+          if (settled) return;
+          if (response.error) {
+            finishError(
+              `gis/${response.error}`,
+              response.error_description || `Google sign-in failed (${response.error}).`
+            );
+            return;
+          }
+          if (!response.access_token) {
+            finishError(
+              'gis/no-token',
+              'Google sign-in completed, but no Calendar access token was granted.'
+            );
+            return;
+          }
+
+          settled = true;
+          const token = response.access_token;
+          cachedAccessToken = token;
+          void fetchCalendarUserProfile(token).then((profile) => {
+            cachedUser = profile;
+            resolve({ user: profile, accessToken: token });
+          });
+        },
+        error_callback: (err: GisError) => {
+          const code =
+            err?.type === 'popup_failed_to_open'
+              ? 'gis/popup_failed_to_open'
+              : err?.type === 'popup_closed'
+                ? 'gis/popup_closed'
+                : 'gis/unknown';
+          finishError(code, err?.message || 'Google sign-in popup did not complete.');
+        },
+      });
+
+      // Must be invoked synchronously inside user click handler to satisfy browser popup policies
+      tokenClient.requestAccessToken({ prompt: 'select_account' });
+    } catch (err: any) {
+      finishError('gis/init-error', err?.message || 'Failed to launch Google sign-in.');
+    }
+  });
+}
+
+async function requestFirebasePopupSignIn(): Promise<{
+  user: AuthUser;
+  accessToken: string;
+}> {
+  const result = await signInWithPopup(
+    auth,
+    provider,
+    browserPopupRedirectResolver
+  );
+  const credential = GoogleAuthProvider.credentialFromResult(result);
+  const fallbackToken = (result as any)?._tokenResponse?.oauthAccessToken as
+    | string
+    | undefined;
+  const accessToken = credential?.accessToken || fallbackToken;
+
+  if (!accessToken) {
+    throw new Error(
+      'Google sign-in succeeded, but no Calendar access token was granted. Please approve Calendar permissions on the Google prompt.'
+    );
+  }
+
+  const user: AuthUser = {
+    displayName: result.user.displayName,
+    email: result.user.email,
+  };
+  cachedAccessToken = accessToken;
+  cachedUser = user;
+  return { user, accessToken };
+}
+
 export const googleSignIn = async (): Promise<{
-  user: User;
+  user: AuthUser;
   accessToken: string;
 }> => {
   if (isSigningIn) {
-    throw new Error(
-      'Sign-in is already in progress. Complete or close the open Google popup.'
+    throw Object.assign(
+      new Error(
+        'Sign-in is already in progress. Complete or close the open Google popup.'
+      ),
+      { code: 'auth/cancelled-popup-request' }
     );
   }
-  try {
-    isSigningIn = true;
-    const result = await signInWithPopup(
-      auth,
-      provider,
-      browserPopupRedirectResolver
-    );
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    const fallbackToken = (result as any)?._tokenResponse?.oauthAccessToken as
-      | string
-      | undefined;
-    const accessToken = credential?.accessToken || fallbackToken;
 
-    if (!accessToken) {
-      throw new Error(
-        'Google sign-in succeeded, but no Calendar access token was granted. Please approve Calendar permissions on the Google prompt.'
-      );
+  isSigningIn = true;
+  try {
+    // Prefer Google Identity Services (storagerelay://) synchronously on click because it bypasses
+    // cross-origin firebaseapp.com/__/auth/iframe storage partitioning issues on Cloud Run previews.
+    if (
+      window.google?.accounts?.oauth2?.initTokenClient &&
+      firebaseConfig.oAuthClientId
+    ) {
+      return await requestGisTokenSync();
     }
 
-    cachedAccessToken = accessToken;
-    return { user: result.user, accessToken };
+    // Fallback to Firebase popup synchronously if GIS script was blocked or has not finished loading
+    return await requestFirebasePopupSignIn();
   } finally {
     isSigningIn = false;
   }
@@ -229,9 +444,21 @@ export const getAccessToken = (): string | null => cachedAccessToken;
 
 export const clearAccessToken = () => {
   cachedAccessToken = null;
+  cachedUser = null;
 };
 
 export const logout = async () => {
-  await auth.signOut();
+  const tokenToRevoke = cachedAccessToken;
   cachedAccessToken = null;
+  cachedUser = null;
+
+  if (tokenToRevoke && window.google?.accounts?.oauth2?.revoke) {
+    try {
+      window.google.accounts.oauth2.revoke(tokenToRevoke, () => {});
+    } catch {
+      // Ignore revoke failures on sign-out
+    }
+  }
+
+  await auth.signOut().catch(() => {});
 };
