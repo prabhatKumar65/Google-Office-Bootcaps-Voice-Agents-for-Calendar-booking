@@ -1,10 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
-import type { CalendarEventItem } from '../types/calendar';
+import type { CalendarEventItem, PythonSlotSuggestion } from '../types/calendar';
 
 interface BookingModalProps {
   isOpen: boolean;
   editingEvent: CalendarEventItem | null;
+  prefillSlot?: PythonSlotSuggestion | null;
   timeZone: string;
   onClose: () => void;
   onSubmitNew: (payload: {
@@ -54,6 +55,7 @@ function buildOffsetIso(dateStr: string, timeStr: string): string {
 export const BookingModal: React.FC<BookingModalProps> = ({
   isOpen,
   editingEvent,
+  prefillSlot,
   timeZone,
   onClose,
   onSubmitNew,
@@ -86,6 +88,15 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       );
       setDescription(editingEvent.description || '');
       setAddMeet(false);
+    } else if (prefillSlot) {
+      setSummary('');
+      setDate(toLocalDateInput(prefillSlot.startIso));
+      setStartTime(toLocalTimeInput(prefillSlot.startIso, 0));
+      setEndTime(toLocalTimeInput(prefillSlot.endIso, 0));
+      setLocation('');
+      setAttendeesText('');
+      setDescription('');
+      setAddMeet(true);
     } else {
       setSummary('');
       setDate(toLocalDateInput());
@@ -96,7 +107,7 @@ export const BookingModal: React.FC<BookingModalProps> = ({
       setDescription('');
       setAddMeet(true);
     }
-  }, [isOpen, editingEvent]);
+  }, [isOpen, editingEvent, prefillSlot]);
 
   if (!isOpen) return null;
 

@@ -1,11 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   CheckCircle2,
-  Hand,
+  ImagePlus,
   Loader2,
-  Mic,
-  MicOff,
-  PhoneOff,
   Send,
   Trash2,
   Wrench,
@@ -21,6 +18,8 @@ import type {
 import { WaveformVisualizer } from './WaveformVisualizer';
 
 interface VoiceAgentConsoleProps {
+  customAvatar: string | null;
+  onOpenAvatarSettings: () => void;
   connectionState: AgentConnectionState;
   vadState: VadActivityState;
   dbLevel: number;
@@ -58,6 +57,8 @@ function formatToolLabel(name?: string): string {
 }
 
 export const VoiceAgentConsole: React.FC<VoiceAgentConsoleProps> = ({
+  customAvatar,
+  onOpenAvatarSettings,
   connectionState,
   vadState,
   dbLevel,
@@ -96,85 +97,30 @@ export const VoiceAgentConsole: React.FC<VoiceAgentConsoleProps> = ({
   };
 
   return (
-    <section className="flex min-h-[540px] flex-col rounded-xl border border-slate-200 bg-white">
+    <section className="flex min-h-[480px] flex-col rounded-xl border border-slate-200 bg-white">
       {/* Header */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-200 px-5 py-4">
         <div>
-          <h1 className="text-lg font-semibold text-slate-900">
-            Voice Booking Console
-          </h1>
+          <h2 className="text-lg font-semibold text-slate-900">
+            Acoustic VAD &amp; Live Transcript
+          </h2>
           <div className="mt-0.5 flex flex-wrap items-center gap-2 text-xs text-slate-500">
-            <span>Gemini Live</span>
+            <span>Gemini Live + Python NLP</span>
             <span aria-hidden="true">·</span>
             <span>{activeLang.nativeLabel}</span>
             <span aria-hidden="true">·</span>
             <span>Real-time VAD</span>
           </div>
         </div>
-
         <div className="flex items-center gap-2">
-          {connectionState === 'connected' ? (
-            <>
-              <button
-                type="button"
-                onClick={onToggleMute}
-                className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 ${
-                  isMuted
-                    ? 'border-amber-300 bg-amber-50 text-amber-800 hover:bg-amber-100'
-                    : 'border-slate-300 bg-white text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                {isMuted ? (
-                  <>
-                    <MicOff className="h-3.5 w-3.5" />
-                    <span>Unmute</span>
-                  </>
-                ) : (
-                  <>
-                    <Mic className="h-3.5 w-3.5" />
-                    <span>Mute</span>
-                  </>
-                )}
-              </button>
-
-              {vadState === 'agent_speaking' && (
-                <button
-                  type="button"
-                  onClick={onManualInterrupt}
-                  className="inline-flex items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-medium text-slate-700 transition-colors hover:bg-slate-50 whitespace-nowrap shrink-0"
-                >
-                  <Hand className="h-3.5 w-3.5" />
-                  <span>Interrupt</span>
-                </button>
-              )}
-
-              <button
-                type="button"
-                onClick={onStopSession}
-                className="inline-flex items-center gap-1.5 rounded-lg bg-red-600 px-3.5 py-2 text-xs font-medium text-white transition-colors hover:bg-red-700 whitespace-nowrap shrink-0"
-              >
-                <PhoneOff className="h-3.5 w-3.5" />
-                <span>End Call</span>
-              </button>
-            </>
-          ) : (
+          {connectionState === 'connected' && (
             <button
               type="button"
-              onClick={onStartSession}
-              disabled={connectionState === 'connecting'}
-              className="inline-flex items-center gap-2 rounded-lg bg-blue-700 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-800 disabled:opacity-60 whitespace-nowrap shrink-0"
+              onClick={onOpenAvatarSettings}
+              className="inline-flex items-center gap-1 rounded-lg border border-slate-200 bg-white px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-50 whitespace-nowrap shrink-0"
             >
-              {connectionState === 'connecting' ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  <span>Connecting...</span>
-                </>
-              ) : (
-                <>
-                  <Mic className="h-4 w-4" />
-                  <span>Start Voice Session</span>
-                </>
-              )}
+              <ImagePlus className="h-3.5 w-3.5" />
+              <span>Agent Settings</span>
             </button>
           )}
         </div>
@@ -323,6 +269,15 @@ export const VoiceAgentConsole: React.FC<VoiceAgentConsoleProps> = ({
                 >
                   {entry.text}
                 </div>
+                {isUser && entry.nlpAnalysis && (
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-slate-500 tabular-nums">
+                    <span>Python NLP: {entry.nlpAnalysis.intent}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{entry.nlpAnalysis.language}</span>
+                    <span aria-hidden="true">·</span>
+                    <span>{entry.nlpAnalysis.latencyMs} ms</span>
+                  </div>
+                )}
               </div>
             );
           })

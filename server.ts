@@ -5,6 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import {
+  checkCalendarFreeBusy,
   createCalendarEvent,
   deleteCalendarEvent,
   getCalendarProfile,
@@ -12,6 +13,7 @@ import {
   updateCalendarEvent,
 } from './server/calendarApi.ts';
 import { attachLiveWebSocketHandler } from './server/liveBridge.ts';
+import { pythonBridge } from './server/pythonBridge.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -30,8 +32,71 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  void pythonBridge.ensureStarted();
+
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true });
+  });
+
+  app.get('/api/python/status', async (_req, res) => {
+    const status = await pythonBridge.getStatus();
+    res.json(status);
+  });
+
+  app.post('/api/python/analyze', async (req, res) => {
+    const text = String(req.body?.text || '').trim();
+    if (!text) {
+      res.status(400).json({ error: 'Text is required for Python NLP analysis.' });
+      return;
+    }
+    const languageHint = String(req.body?.languageHint || 'auto');
+    const timeZone = String(req.body?.timeZone || 'Asia/Kolkata');
+    const result = await pythonBridge.analyzeUtterance(text, languageHint, timeZone);
+    if (!result) {
+      res.status(503).json({ error: 'Python NLP engine is unavailable.' });
+      return;
+    }
+    res.json(result);
+  });
+
+  app.post('/api/python/suggest-slots', async (req, res) => {
+    const token = extractBearerToken(req);
+    const targetDate = req.body?.targetDate
+      ? String(req.body.targetDate)
+      : new Date().toISOString().slice(0, 10);
+    const timeZone = String(req.body?.timeZone || 'Asia/Kolkata');
+    const durationMinutes = Number(req.body?.durationMinutes || 30);
+
+    try {
+      let busySlots: Array<{ start: string; end: string }> = Array.isArray(
+        req.body?.busySlots
+      )
+        ? req.body.busySlots
+        : [];
+
+      if (token) {
+        const dayStart = `${targetDate.slice(0, 10)}T00:00:00Z`;
+        const dayEnd = `${targetDate.slice(0, 10)}T23:59:59Z`;
+        const fb = await checkCalendarFreeBusy(token, {
+          timeMin: dayStart,
+          timeMax: dayEnd,
+          timeZone,
+        });
+        busySlots = fb.busySlots || [];
+      }
+
+      const suggestions = await pythonBridge.suggestSlots({
+        busySlots,
+        targetDate,
+        durationMinutes,
+        timeZone,
+      });
+      res.json(suggestions);
+    } catch (err: any) {
+      res.status(err?.status || 500).json({
+        error: err?.message || 'Failed to compute Python slot suggestions.',
+      });
+    }
   });
 
   app.get('/api/calendar/profile', async (req, res) => {

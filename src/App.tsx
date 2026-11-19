@@ -1,8 +1,11 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { AgentSettingsPanel } from './components/AgentSettingsPanel';
 import { BookingModal } from './components/BookingModal';
 import { CalendarPanel, type DateRangeFilter } from './components/CalendarPanel';
 import { ConfirmationModal } from './components/ConfirmationModal';
+import { PythonPipelinePanel } from './components/PythonPipelinePanel';
 import { Sidebar } from './components/Sidebar';
+import { SpeakingAgentStage } from './components/SpeakingAgentStage';
 import { VoiceAgentConsole } from './components/VoiceAgentConsole';
 import { VoiceAudioEngine } from './lib/audioEngine';
 import {
@@ -20,11 +23,16 @@ import type {
   CalendarEventItem,
   LanguageCode,
   PendingConfirmation,
+  PortalView,
+  PythonNlpAnalysis,
+  PythonSlotSuggestion,
   TranscriptEntry,
   VadActivityState,
   VadSensitivity,
   VoiceName,
 } from './types/calendar';
+
+const AVATAR_STORAGE_KEY = 'prabhat_agent_custom_avatar';
 
 function nowTimeLabel(): string {
   return new Intl.DateTimeFormat('en-IN', {
@@ -57,9 +65,21 @@ function getDateWindow(range: DateRangeFilter): { timeMin: string; timeMax: stri
   return { timeMin: start.toISOString(), timeMax: weekEnd.toISOString() };
 }
 
+function loadSavedAvatar(): string | null {
+  try {
+    return window.localStorage.getItem(AVATAR_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
 export default function App() {
   const browserTz =
     Intl.DateTimeFormat().resolvedOptions().timeZone || 'Asia/Kolkata';
+
+  // Portal Navigation & Custom Agent PNG
+  const [activeView, setActiveView] = useState<PortalView>('voice-desk');
+  const [customAvatar, setCustomAvatar] = useState<string | null>(() => loadSavedAvatar());
 
   // Auth & Calendar state
   const [needsAuth, setNeedsAuth] = useState(true);
@@ -79,7 +99,7 @@ export default function App() {
   const [dateRange, setDateRange] = useState<DateRangeFilter>('week');
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Voice AI & VAD state
+  // Voice AI, VAD & Python NLP state
   const [language, setLanguage] = useState<LanguageCode>('auto');
   const [voiceName, setVoiceName] = useState<VoiceName>('Zephyr');
   const [vadSensitivity, setVadSensitivity] = useState<VadSensitivity>('balanced');
@@ -94,6 +114,7 @@ export default function App() {
   const [isMuted, setIsMuted] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
+  const [nlpHistory, setNlpHistory] = useState<PythonNlpAnalysis[]>([]);
 
   // Modals
   const [pendingConfirm, setPendingConfirm] = useState<PendingConfirmation | null>(
@@ -102,6 +123,7 @@ export default function App() {
   const [isConfirmSubmitting, setIsConfirmSubmitting] = useState(false);
   const [bookingModalOpen, setBookingModalOpen] = useState(false);
   const [editingEvent, setEditingEvent] = useState<CalendarEventItem | null>(null);
+  const [prefillSlot, setPrefillSlot] = useState<PythonSlotSuggestion | null>(null);
 
   // Refs to prevent stale closures inside WebSocket & AudioWorklet callbacks
   const wsRef = useRef<WebSocket | null>(null);
@@ -112,6 +134,19 @@ export default function App() {
   const pendingTextQueueRef = useRef<string[]>([]);
   const isAgentSpeakingRef = useRef(false);
   const isToolRunningRef = useRef(false);
+
+  const handleCustomAvatarChange = (dataUrl: string | null) => {
+    setCustomAvatar(dataUrl);
+    try {
+      if (dataUrl) {
+        window.localStorage.setItem(AVATAR_STORAGE_KEY, dataUrl);
+      } else {
+        window.localStorage.removeItem(AVATAR_STORAGE_KEY);
+      }
+    } catch {
+      // Non-fatal if storage quota is reached
+    }
+  };
 
   useEffect(() => {
     tokenRef.current = accessToken;
@@ -268,13 +303,26 @@ export default function App() {
     setTranscripts((prev) => [...prev, entry]);
   }, []);
 
+  const recordPythonAnalysis = useCallback((analysis: PythonNlpAnalysis) => {
+    setNlpHistory((prev) => [analysis, ...prev].slice(0, 50));
+    setTranscripts((prev) => {
+      for (let i = prev.length - 1; i >= 0; i--) {
+        if (prev[i].role === 'user' && !prev[i].nlpAnalysis) {
+          const next = [...prev];
+          next[i] = { ...next[i], nlpAnalysis: analysis };
+          return next;
+        }
+      }
+      return prev;
+    });
+  }, []);
+
   const upsertStreamBubble = useCallback(
     (role: 'user' | 'agent', chunk: string, interim = false) => {
       const ref =
         role === 'user' ? activeUserBubbleIdRef : activeAgentBubbleIdRef;
       const otherRef =
         role === 'user' ? activeAgentBubbleIdRef : activeUserBubbleIdRef;
-      // Starting a new speaker turn closes the opposite speaker's active bubble
       otherRef.current = null;
 
       if (!chunk) return;
@@ -432,7 +480,6 @@ export default function App() {
             timestamp: nowTimeLabel(),
           });
 
-          // Flush any queued text prompt
           while (pendingTextQueueRef.current.length > 0) {
             const text = pendingTextQueueRef.current.shift()!;
             ws.send(JSON.stringify({ type: 'text', text }));
@@ -451,13 +498,17 @@ export default function App() {
           return;
         }
 
+        if (msg.type === 'python_nlp' && msg.analysis) {
+          recordPythonAnalysis(msg.analysis as PythonNlpAnalysis);
+          return;
+        }
+
         if (msg.type === 'interim_input_transcript' && msg.text) {
           upsertStreamBubble('user', msg.text, true);
           return;
         }
 
         if (msg.type === 'input_transcript' && msg.text) {
-          // Replace interim text or append final transcript cleanly
           setTranscripts((prev) => {
             const existingId = activeUserBubbleIdRef.current;
             if (existingId) {
@@ -477,7 +528,6 @@ export default function App() {
           if (!activeUserBubbleIdRef.current) {
             upsertStreamBubble('user', msg.text, false);
           } else {
-            // Ensure final chunk is stored if bubble wasn't interim
             setTranscripts((prev) => {
               const existingId = activeUserBubbleIdRef.current;
               const idx = prev.findIndex((t) => t.id === existingId);
@@ -612,6 +662,7 @@ export default function App() {
     voiceName,
     requireBookConfirm,
     appendTranscript,
+    recordPythonAnalysis,
     upsertStreamBubble,
     fetchCalendarData,
     stopVoiceSession,
@@ -664,7 +715,6 @@ export default function App() {
     }
   };
 
-  // Manual Calendar Operations (PATCH & DELETE always pass through ConfirmationModal)
   const handleCreateManualEvent = async (payload: {
     summary: string;
     startDateTime: string;
@@ -778,9 +828,28 @@ export default function App() {
     setPendingConfirm(null);
   };
 
+  const latestAgentCaption = (() => {
+    for (let i = transcripts.length - 1; i >= 0; i--) {
+      if (transcripts[i].role === 'agent' && transcripts[i].text.trim()) {
+        return transcripts[i].text.trim();
+      }
+    }
+    return null;
+  })();
+
+  const viewBreadcrumb =
+    activeView === 'voice-desk'
+      ? 'Enterprise Portal / Live Voice Desk'
+      : activeView === 'python-pipeline'
+        ? 'Enterprise Portal / Python NLP & Pipeline'
+        : 'Enterprise Portal / Voice & Agent Settings';
+
   return (
     <div className="flex min-h-screen flex-col bg-slate-50 text-slate-900 lg:flex-row">
       <Sidebar
+        activeView={activeView}
+        onViewChange={setActiveView}
+        customAvatar={customAvatar}
         user={user}
         needsAuth={needsAuth}
         isLoggingIn={isLoggingIn}
@@ -792,107 +861,164 @@ export default function App() {
         language={language}
         onLanguageChange={setLanguage}
         voiceName={voiceName}
-        onVoiceChange={setVoiceName}
         vadSensitivity={vadSensitivity}
-        onVadSensitivityChange={setVadSensitivity}
-        bargeInEnabled={bargeInEnabled}
-        onBargeInChange={setBargeInEnabled}
-        noiseGateEnabled={noiseGateEnabled}
-        onNoiseGateChange={setNoiseGateEnabled}
-        requireBookConfirm={requireBookConfirm}
-        onRequireBookConfirmChange={setRequireBookConfirm}
         connectionState={connectionState}
+        vadState={vadState}
         onRestartSession={handleRestartSession}
       />
 
       <div className="flex min-w-0 flex-1 flex-col">
-        {/* Top Workspace Header */}
+        {/* Top Enterprise Header */}
         <header className="flex h-16 items-center justify-between gap-8 border-b border-slate-200 bg-white px-6">
-          <div className="min-w-0">
-            <span className="text-sm font-medium text-slate-600 truncate block">
-              Scheduling Workspace / Multilingual Voice Pipeline
-            </span>
-          </div>
-          <div className="flex items-center gap-3 shrink-0">
+          <span className="truncate text-sm font-medium text-slate-600">
+            {viewBreadcrumb}
+          </span>
+          <div className="flex items-center gap-4 shrink-0">
             <span className="hidden sm:inline text-xs text-slate-500 whitespace-nowrap">
               {needsAuth ? 'Calendar disconnected' : 'Google Calendar synced'}
             </span>
           </div>
         </header>
 
-        {/* Main 2-Column Split */}
-        <main className="mx-auto w-full max-w-[1400px] flex-1 p-5 lg:p-6">
-          <div className="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-12">
-            <div className="xl:col-span-7 flex flex-col">
-              <VoiceAgentConsole
+        {/* Main Enterprise Portal Viewport */}
+        <main className="mx-auto w-full max-w-[1440px] flex-1 p-5 lg:p-6">
+          {activeView === 'voice-desk' && (
+            <div className="space-y-6">
+              {/* Main Center-Top Speaking AI Agent Stage */}
+              <SpeakingAgentStage
+                customAvatar={customAvatar}
                 connectionState={connectionState}
                 vadState={vadState}
-                dbLevel={dbLevel}
                 isMuted={isMuted}
                 language={language}
                 inputAnalyser={audioEngineRef.current?.getInputAnalyser() ?? null}
                 outputAnalyser={
                   audioEngineRef.current?.getOutputAnalyser() ?? null
                 }
-                transcripts={transcripts}
-                errorMessage={voiceError}
+                latestAgentCaption={latestAgentCaption}
                 onStartSession={startVoiceSession}
                 onStopSession={stopVoiceSession}
                 onToggleMute={handleToggleMute}
                 onManualInterrupt={handleManualInterrupt}
-                onSendText={handleSendText}
-                onClearTranscript={() => setTranscripts([])}
+                onOpenAvatarSettings={() => setActiveView('agent-settings')}
               />
-            </div>
 
-            <div className="xl:col-span-5 flex flex-col">
-              <CalendarPanel
-                isAuthenticated={!needsAuth && Boolean(accessToken)}
-                isLoggingIn={isLoggingIn}
-                authError={authError}
-                onLogin={handleLogin}
-                onRedirectLogin={handleRedirectLogin}
-                events={events}
-                loading={eventsLoading}
-                error={eventsError}
-                timeZone={calendarTimeZone}
-                dateRange={dateRange}
-                onDateRangeChange={setDateRange}
-                searchQuery={searchQuery}
-                onSearchQueryChange={setSearchQuery}
-                onRefresh={() => void fetchCalendarData()}
-                onNewBooking={() => {
-                  setEditingEvent(null);
-                  setBookingModalOpen(true);
-                }}
-                onEditEvent={(ev) => {
-                  setEditingEvent(ev);
-                  setBookingModalOpen(true);
-                }}
-                onCancelEvent={(ev) => {
-                  setPendingConfirm({
-                    id: `ui-cancel-${ev.id}`,
-                    source: 'ui',
-                    operation: 'cancel',
-                    eventId: ev.id,
-                    title: ev.summary || '(Untitled event)',
-                    currentStart: ev.start.dateTime || ev.start.date,
-                    currentEnd: ev.end.dateTime || ev.end.date,
-                  });
-                }}
-              />
+              <div className="grid grid-cols-1 items-stretch gap-6 xl:grid-cols-12">
+                <div className="xl:col-span-7 flex flex-col">
+                  <VoiceAgentConsole
+                    customAvatar={customAvatar}
+                    onOpenAvatarSettings={() => setActiveView('agent-settings')}
+                    connectionState={connectionState}
+                    vadState={vadState}
+                    dbLevel={dbLevel}
+                    isMuted={isMuted}
+                    language={language}
+                    inputAnalyser={audioEngineRef.current?.getInputAnalyser() ?? null}
+                    outputAnalyser={
+                      audioEngineRef.current?.getOutputAnalyser() ?? null
+                    }
+                    transcripts={transcripts}
+                    errorMessage={voiceError}
+                    onStartSession={startVoiceSession}
+                    onStopSession={stopVoiceSession}
+                    onToggleMute={handleToggleMute}
+                    onManualInterrupt={handleManualInterrupt}
+                    onSendText={handleSendText}
+                    onClearTranscript={() => setTranscripts([])}
+                  />
+                </div>
+
+                <div className="xl:col-span-5 flex flex-col">
+                  <CalendarPanel
+                    isAuthenticated={!needsAuth && Boolean(accessToken)}
+                    isLoggingIn={isLoggingIn}
+                    authError={authError}
+                    onLogin={handleLogin}
+                    onRedirectLogin={handleRedirectLogin}
+                    events={events}
+                    loading={eventsLoading}
+                    error={eventsError}
+                    timeZone={calendarTimeZone}
+                    dateRange={dateRange}
+                    onDateRangeChange={setDateRange}
+                    searchQuery={searchQuery}
+                    onSearchQueryChange={setSearchQuery}
+                    onRefresh={() => void fetchCalendarData()}
+                    onNewBooking={() => {
+                      setEditingEvent(null);
+                      setPrefillSlot(null);
+                      setBookingModalOpen(true);
+                    }}
+                    onEditEvent={(ev) => {
+                      setEditingEvent(ev);
+                      setPrefillSlot(null);
+                      setBookingModalOpen(true);
+                    }}
+                    onCancelEvent={(ev) => {
+                      setPendingConfirm({
+                        id: `ui-cancel-${ev.id}`,
+                        source: 'ui',
+                        operation: 'cancel',
+                        eventId: ev.id,
+                        title: ev.summary || '(Untitled event)',
+                        currentStart: ev.start.dateTime || ev.start.date,
+                        currentEnd: ev.end.dateTime || ev.end.date,
+                      });
+                    }}
+                  />
+                </div>
+              </div>
             </div>
-          </div>
+          )}
+
+          {activeView === 'python-pipeline' && (
+            <PythonPipelinePanel
+              timeZone={calendarTimeZone}
+              language={language}
+              isAuthenticated={!needsAuth && Boolean(accessToken)}
+              accessToken={accessToken}
+              recentAnalyses={nlpHistory}
+              onRecordAnalysis={recordPythonAnalysis}
+              onSelectSlotToBook={(slot) => {
+                setEditingEvent(null);
+                setPrefillSlot(slot);
+                setBookingModalOpen(true);
+              }}
+            />
+          )}
+
+          {activeView === 'agent-settings' && (
+            <AgentSettingsPanel
+              customAvatar={customAvatar}
+              onCustomAvatarChange={handleCustomAvatarChange}
+              language={language}
+              onLanguageChange={setLanguage}
+              voiceName={voiceName}
+              onVoiceChange={setVoiceName}
+              vadSensitivity={vadSensitivity}
+              onVadSensitivityChange={setVadSensitivity}
+              bargeInEnabled={bargeInEnabled}
+              onBargeInChange={setBargeInEnabled}
+              noiseGateEnabled={noiseGateEnabled}
+              onNoiseGateChange={setNoiseGateEnabled}
+              requireBookConfirm={requireBookConfirm}
+              onRequireBookConfirmChange={setRequireBookConfirm}
+              connectionState={connectionState}
+              onRestartSession={handleRestartSession}
+            />
+          )}
         </main>
       </div>
 
       <BookingModal
         isOpen={bookingModalOpen}
         editingEvent={editingEvent}
+        prefillSlot={prefillSlot}
         timeZone={calendarTimeZone}
         onClose={() => {
           setBookingModalOpen(false);
           setEditingEvent(null);
+          setPrefillSlot(null);
         }}
         onSubmitNew={handleCreateManualEvent}
         onRequestUpdateConfirmation={(ev, proposed) => {

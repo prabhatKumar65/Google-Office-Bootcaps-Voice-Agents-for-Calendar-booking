@@ -17,6 +17,7 @@ import {
   updateCalendarEvent,
 } from './calendarApi.ts';
 import { getGeminiLiveClient } from './geminiClient.ts';
+import { pythonBridge } from './pythonBridge.ts';
 
 interface InitPayload {
   type: 'init';
@@ -255,8 +256,10 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
   let session: any = null;
   let accessToken: string | null = null;
   let userTimeZone = 'Asia/Kolkata';
+  let userLanguage = 'auto';
   let requireBookConfirm = false;
   let isClosed = false;
+  let inputTranscriptBuffer = '';
 
   const pendingConfirmations = new Map<string, PendingConfirmResolver>();
 
@@ -264,6 +267,17 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
     if (!isClosed && clientWs.readyState === clientWs.OPEN) {
       clientWs.send(JSON.stringify(payload));
     }
+  };
+
+  const flushInputNlp = () => {
+    const text = inputTranscriptBuffer.trim();
+    if (!text) return;
+    inputTranscriptBuffer = '';
+    void pythonBridge.analyzeUtterance(text, userLanguage, userTimeZone).then((analysis) => {
+      if (analysis) {
+        safeSend({ type: 'python_nlp', analysis });
+      }
+    });
   };
 
   const requestUserConfirmation = (confirmPayload: Record<string, unknown>) => {
@@ -546,6 +560,7 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
         const init = msg as InitPayload;
         accessToken = init.accessToken || null;
         userTimeZone = init.timeZone || 'Asia/Kolkata';
+        userLanguage = init.language || 'auto';
         requireBookConfirm = Boolean(init.requireBookConfirm);
 
         const ai = getGeminiLiveClient();
@@ -612,6 +627,7 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
               }
 
               if (content?.inputTranscription?.text) {
+                inputTranscriptBuffer += content.inputTranscription.text;
                 safeSend({
                   type: 'input_transcript',
                   text: content.inputTranscription.text,
@@ -619,6 +635,7 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
               }
 
               if (content?.outputTranscription?.text) {
+                flushInputNlp();
                 safeSend({
                   type: 'output_transcript',
                   text: content.outputTranscription.text,
@@ -627,6 +644,7 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
 
               for (const part of content?.modelTurn?.parts ?? []) {
                 if (part.inlineData?.data) {
+                  flushInputNlp();
                   safeSend({
                     type: 'audio',
                     data: part.inlineData.data,
@@ -639,6 +657,7 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
               }
 
               if (content?.turnComplete) {
+                flushInputNlp();
                 safeSend({ type: 'turn_complete' });
               }
 
@@ -700,8 +719,14 @@ export function attachLiveWebSocketHandler(clientWs: WebSocket) {
       }
 
       if (msg.type === 'text' && session && !isClosed && msg.text) {
+        const text = String(msg.text);
+        void pythonBridge.analyzeUtterance(text, userLanguage, userTimeZone).then((analysis) => {
+          if (analysis) {
+            safeSend({ type: 'python_nlp', analysis });
+          }
+        });
         session.sendClientContent({
-          turns: [{ role: 'user', parts: [{ text: String(msg.text) }] }],
+          turns: [{ role: 'user', parts: [{ text }] }],
           turnComplete: true,
         });
         return;

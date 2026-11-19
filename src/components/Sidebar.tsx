@@ -1,16 +1,28 @@
 import React from 'react';
-import { LogOut, Mic, ShieldCheck, Sliders, Volume2 } from 'lucide-react';
+import {
+  Cpu,
+  LogOut,
+  Mic,
+  Sliders,
+  Volume2,
+} from 'lucide-react';
 import type { AuthUser } from '../lib/firebaseAuth';
-import { LANGUAGE_OPTIONS, VOICE_OPTIONS } from '../lib/languages';
+import { LANGUAGE_OPTIONS } from '../lib/languages';
 import type {
   AgentConnectionState,
   LanguageCode,
+  PortalView,
+  VadActivityState,
   VadSensitivity,
   VoiceName,
 } from '../types/calendar';
+import { AgentAvatar } from './AgentAvatar';
 import { GoogleSignInButton } from './GoogleSignInButton';
 
 interface SidebarProps {
+  activeView: PortalView;
+  onViewChange: (view: PortalView) => void;
+  customAvatar: string | null;
   user: AuthUser | null;
   needsAuth: boolean;
   isLoggingIn: boolean;
@@ -26,20 +38,42 @@ interface SidebarProps {
   language: LanguageCode;
   onLanguageChange: (lang: LanguageCode) => void;
   voiceName: VoiceName;
-  onVoiceChange: (voice: VoiceName) => void;
   vadSensitivity: VadSensitivity;
-  onVadSensitivityChange: (sens: VadSensitivity) => void;
-  bargeInEnabled: boolean;
-  onBargeInChange: (enabled: boolean) => void;
-  noiseGateEnabled: boolean;
-  onNoiseGateChange: (enabled: boolean) => void;
-  requireBookConfirm: boolean;
-  onRequireBookConfirmChange: (enabled: boolean) => void;
   connectionState: AgentConnectionState;
+  vadState: VadActivityState;
   onRestartSession: () => void;
 }
 
+const NAV_ITEMS: Array<{
+  id: PortalView;
+  label: string;
+  description: string;
+  icon: React.FC<{ className?: string }>;
+}> = [
+  {
+    id: 'voice-desk',
+    label: 'Live Voice Desk',
+    description: 'Voice agent & Calendar sync',
+    icon: Mic,
+  },
+  {
+    id: 'python-pipeline',
+    label: 'Python NLP & Pipeline',
+    description: 'Intent engine & slot optimizer',
+    icon: Cpu,
+  },
+  {
+    id: 'agent-settings',
+    label: 'Voice & Agent Settings',
+    description: 'Avatar PNG, VAD & dialects',
+    icon: Sliders,
+  },
+];
+
 export const Sidebar: React.FC<SidebarProps> = ({
+  activeView,
+  onViewChange,
+  customAvatar,
   user,
   needsAuth,
   isLoggingIn,
@@ -51,33 +85,72 @@ export const Sidebar: React.FC<SidebarProps> = ({
   language,
   onLanguageChange,
   voiceName,
-  onVoiceChange,
   vadSensitivity,
-  onVadSensitivityChange,
-  bargeInEnabled,
-  onBargeInChange,
-  noiseGateEnabled,
-  onNoiseGateChange,
-  requireBookConfirm,
-  onRequireBookConfirmChange,
   connectionState,
+  vadState,
   onRestartSession,
 }) => {
   return (
-    <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-[300px] lg:border-b-0 lg:border-r">
-      {/* Brand Zone */}
-      <div className="flex min-h-16 items-center justify-between gap-2 border-b border-slate-200 px-5 py-3">
-        <span className="font-display text-base font-bold tracking-tight text-slate-900 leading-tight">
-          Prabhat Personal AI Agent
-        </span>
-        <span className="font-mono text-[11px] text-slate-500 tabular-nums whitespace-nowrap shrink-0">
-          {calendarTimeZone}
-        </span>
+    <aside className="flex w-full shrink-0 flex-col border-b border-slate-200 bg-white lg:w-[290px] lg:border-b-0 lg:border-r">
+      {/* Brand Header */}
+      <div className="flex items-center gap-3 border-b border-slate-200 px-5 py-4">
+        <AgentAvatar
+          customSrc={customAvatar}
+          size="sm"
+          active={connectionState === 'connected'}
+          speaking={vadState === 'agent_speaking'}
+        />
+        <div className="min-w-0 flex-1">
+          <div className="truncate font-display text-sm font-bold tracking-tight text-slate-900">
+            Prabhat Personal AI Agent
+          </div>
+          <div className="truncate font-mono text-[11px] text-slate-500 tabular-nums">
+            {calendarTimeZone}
+          </div>
+        </div>
       </div>
 
       <div className="flex-1 space-y-6 overflow-y-auto p-5">
+        {/* Enterprise Portal Navigation */}
+        <nav aria-label="Portal workspace views" className="space-y-1">
+          <div className="mb-2 text-xs font-semibold text-slate-500">
+            Workspace Modules
+          </div>
+          {NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = activeView === item.id;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => onViewChange(item.id)}
+                className={`flex w-full items-center gap-3 rounded-lg border px-3 py-2.5 text-left transition-colors ${
+                  active
+                    ? 'border-blue-700 bg-blue-50/70 text-blue-900'
+                    : 'border-transparent text-slate-700 hover:bg-slate-50 hover:text-slate-900'
+                }`}
+              >
+                <Icon
+                  className={`h-4 w-4 shrink-0 ${
+                    active ? 'text-blue-700' : 'text-slate-400'
+                  }`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-xs font-semibold">{item.label}</div>
+                  <div className="truncate text-[11px] text-slate-500">
+                    {item.description}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </nav>
+
         {/* Google Calendar Account */}
-        <section aria-label="Google Calendar connection">
+        <section
+          aria-label="Google Calendar connection"
+          className="border-t border-slate-200 pt-5"
+        >
           <h2 className="text-xs font-semibold text-slate-500">
             Google Calendar Sync
           </h2>
@@ -92,7 +165,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 {authError && (
                   <div
                     role="alert"
-                    className="rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs leading-relaxed text-red-700 space-y-1.5"
+                    className="space-y-1.5 rounded-lg border border-red-200 bg-red-50 p-2.5 text-xs leading-relaxed text-red-700"
                   >
                     <p>{authError.message}</p>
                     <div className="flex flex-wrap items-center gap-3">
@@ -119,16 +192,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </div>
                 )}
                 <p className="text-xs leading-relaxed text-slate-500">
-                  Connect your Google Calendar so the voice agent can check availability and book appointments.
+                  Connect Google Calendar for live availability checks and voice scheduling.
                 </p>
               </div>
             ) : (
-              <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/60 p-3">
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50/70 p-3">
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-semibold text-slate-900">
+                  <div className="truncate text-xs font-semibold text-slate-900">
                     {user.displayName || 'Connected Account'}
                   </div>
-                  <div className="truncate text-xs text-slate-500">
+                  <div className="truncate text-[11px] text-slate-500">
                     {user.email || 'Primary calendar synced'}
                   </div>
                 </div>
@@ -139,15 +212,18 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-100 hover:text-slate-900"
                   aria-label="Sign out"
                 >
-                  <LogOut className="h-4 w-4" />
+                  <LogOut className="h-3.5 w-3.5" />
                 </button>
               </div>
             )}
           </div>
         </section>
 
-        {/* Regional Language Selector */}
-        <section aria-label="Language selection">
+        {/* Quick Spoken Language Selector */}
+        <section
+          aria-label="Spoken language selector"
+          className="border-t border-slate-200 pt-5"
+        >
           <div className="flex items-center justify-between">
             <h2 className="text-xs font-semibold text-slate-500">
               Spoken Language
@@ -171,14 +247,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   key={opt.code}
                   type="button"
                   onClick={() => onLanguageChange(opt.code)}
-                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-left text-sm transition-colors ${
+                  className={`flex items-center justify-between rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
                     active
-                      ? 'border-blue-700 bg-blue-50/70 text-blue-900 font-medium'
+                      ? 'border-blue-700 bg-blue-50/70 font-semibold text-blue-900'
                       : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
                   }`}
                 >
                   <span className="truncate">{opt.nativeLabel}</span>
-                  <span className="ml-2 text-xs text-slate-500 whitespace-nowrap shrink-0">
+                  <span className="ml-2 text-[11px] text-slate-500 whitespace-nowrap shrink-0">
                     {opt.label}
                   </span>
                 </button>
@@ -187,123 +263,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </div>
         </section>
 
-        {/* Voice Persona */}
-        <section aria-label="Voice persona">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
-            <Volume2 className="h-3.5 w-3.5" />
-            <span>Agent Voice</span>
-          </div>
-          <div className="mt-2.5 grid grid-cols-2 gap-1.5">
-            {VOICE_OPTIONS.map((v) => {
-              const active = voiceName === v.id;
-              return (
-                <button
-                  key={v.id}
-                  type="button"
-                  onClick={() => onVoiceChange(v.id)}
-                  className={`rounded-lg border px-2.5 py-2 text-left transition-colors ${
-                    active
-                      ? 'border-blue-700 bg-blue-50/70 text-blue-900'
-                      : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <div className="text-xs font-semibold">{v.label}</div>
-                  <div className="truncate text-[11px] text-slate-500">{v.note}</div>
-                </button>
-              );
-            })}
-          </div>
-        </section>
-
-        {/* VAD & Real-time Processing Controls */}
-        <section aria-label="Voice activity detection controls" className="space-y-3.5">
-          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500">
-            <Sliders className="h-3.5 w-3.5" />
-            <span>VAD &amp; Low-Latency Controls</span>
-          </div>
-
-          <div>
-            <div className="mb-1.5 flex items-center justify-between text-xs text-slate-600">
-              <span>VAD Sensitivity</span>
-              <span className="font-mono text-[11px] text-slate-500">
-                {vadSensitivity}
-              </span>
-            </div>
-            <div className="grid grid-cols-3 gap-1 rounded-lg bg-slate-100 p-1">
-              {(['low', 'balanced', 'high'] as VadSensitivity[]).map((sens) => (
-                <button
-                  key={sens}
-                  type="button"
-                  onClick={() => onVadSensitivityChange(sens)}
-                  className={`rounded-md py-1.5 text-xs font-medium capitalize transition-colors whitespace-nowrap ${
-                    vadSensitivity === sens
-                      ? 'bg-white text-slate-900 shadow-xs'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {sens}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <label className="flex cursor-pointer items-start gap-2.5 text-xs text-slate-700">
-            <input
-              type="checkbox"
-              checked={bargeInEnabled}
-              onChange={(e) => onBargeInChange(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-            />
-            <span>
-              <span className="font-medium text-slate-900">Barge-in interruption</span>
-              <span className="block text-slate-500">
-                Stop agent audio immediately when you start speaking
-              </span>
+        {/* Active Acoustic Profile Summary */}
+        <section className="border-t border-slate-200 pt-4 text-xs text-slate-500 space-y-1.5">
+          <div className="flex items-center justify-between">
+            <span className="inline-flex items-center gap-1.5">
+              <Volume2 className="h-3.5 w-3.5 text-slate-400" />
+              <span>Voice Persona</span>
             </span>
-          </label>
-
-          <label className="flex cursor-pointer items-start gap-2.5 text-xs text-slate-700">
-            <input
-              type="checkbox"
-              checked={noiseGateEnabled}
-              onChange={(e) => onNoiseGateChange(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-            />
-            <span>
-              <span className="font-medium text-slate-900">Client VAD noise gate</span>
-              <span className="block text-slate-500">
-                Stream audio only during speech with 320ms pre-roll
-              </span>
+            <span className="font-mono text-[11px] font-medium text-slate-700">
+              {voiceName}
             </span>
-          </label>
-
-          <label className="flex cursor-pointer items-start gap-2.5 text-xs text-slate-700">
-            <input
-              type="checkbox"
-              checked={requireBookConfirm}
-              onChange={(e) => onRequireBookConfirmChange(e.target.checked)}
-              className="mt-0.5 h-4 w-4 rounded border-slate-300 text-blue-700 focus:ring-blue-600"
-            />
-            <span className="flex items-start gap-1">
-              <span>
-                <span className="font-medium text-slate-900">
-                  Confirm new voice bookings
-                </span>
-                <span className="block text-slate-500">
-                  Reschedules &amp; cancellations always require click approval
-                </span>
-              </span>
+          </div>
+          <div className="flex items-center justify-between">
+            <span>VAD Sensitivity</span>
+            <span className="font-mono text-[11px] font-medium capitalize text-slate-700">
+              {vadSensitivity}
             </span>
-          </label>
-
-          <div className="flex items-center gap-2 border-t border-slate-200 pt-3 text-[11px] text-slate-500">
-            <ShieldCheck className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-            <span>16 kHz PCM capture · 24 kHz playback</span>
           </div>
-          <div className="flex items-center gap-2 text-[11px] text-slate-500">
-            <Mic className="h-3.5 w-3.5 shrink-0 text-slate-400" />
-            <span>Supports Hindi, Bhojpuri, Tamil, Marathi, Telugu</span>
-          </div>
+          <button
+            type="button"
+            onClick={() => onViewChange('agent-settings')}
+            className="mt-1 text-[11px] font-medium text-blue-700 hover:underline"
+          >
+            Configure PNG avatar &amp; VAD settings
+          </button>
         </section>
       </div>
     </aside>

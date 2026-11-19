@@ -63,6 +63,56 @@ export interface CalendarProfile {
   timeZone: string;
 }
 
+export type PortalView = 'voice-desk' | 'python-pipeline' | 'agent-settings';
+
+export interface PythonNlpAnalysis {
+  text: string;
+  intent: string;
+  confidence: number;
+  language: string;
+  languageCode: string;
+  script: string;
+  entities: {
+    resolvedDate: string | null;
+    dateLabel: string | null;
+    dayPeriod: string | null;
+    time24h: string | null;
+    durationMinutes: number;
+    wantsGoogleMeet: boolean;
+    matchedCues: string[];
+  };
+  latencyMs: number;
+}
+
+export interface PythonSlotSuggestion {
+  startIso: string;
+  endIso: string;
+  label: string;
+  rationale: string;
+  rank: number;
+}
+
+export interface PythonSlotResponse {
+  date: string;
+  timeZone: string;
+  durationMinutes: number;
+  suggestions: PythonSlotSuggestion[];
+  totalFreeFound: number;
+  latencyMs: number;
+}
+
+export interface PythonEngineStatus {
+  status: string;
+  pythonVersion: string;
+  pid: number | null;
+  uptimeSeconds: number;
+  totalUtterancesAnalyzed: number;
+  averageLatencyMs: number;
+  slotOptimizationsRun: number;
+  intentCounts: Record<string, number>;
+  languageCounts: Record<string, number>;
+}
+
 export interface TranscriptEntry {
   id: string;
   role: 'user' | 'agent' | 'tool' | 'system';
@@ -72,6 +122,7 @@ export interface TranscriptEntry {
   toolName?: string;
   toolStatus?: 'running' | 'completed' | 'cancelled' | 'error';
   meta?: string;
+  nlpAnalysis?: PythonNlpAnalysis;
 }
 
 export interface PendingConfirmation {
