@@ -110,7 +110,6 @@ export default function App() {
   const [connectionState, setConnectionState] =
     useState<AgentConnectionState>('disconnected');
   const [vadState, setVadState] = useState<VadActivityState>('idle');
-  const [dbLevel, setDbLevel] = useState<number>(-60);
   const [isMuted, setIsMuted] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const [transcripts, setTranscripts] = useState<TranscriptEntry[]>([]);
@@ -129,11 +128,16 @@ export default function App() {
   const wsRef = useRef<WebSocket | null>(null);
   const audioEngineRef = useRef<VoiceAudioEngine | null>(null);
   const tokenRef = useRef<string | null>(null);
+  const isSessionReadyRef = useRef(false);
   const activeUserBubbleIdRef = useRef<string | null>(null);
   const activeAgentBubbleIdRef = useRef<string | null>(null);
   const pendingTextQueueRef = useRef<string[]>([]);
   const isAgentSpeakingRef = useRef(false);
   const isToolRunningRef = useRef(false);
+
+  const getDbLevel = useCallback(() => {
+    return audioEngineRef.current?.getCurrentDbLevel() ?? -60;
+  }, []);
 
   const handleCustomAvatarChange = (dataUrl: string | null) => {
     setCustomAvatar(dataUrl);
@@ -360,6 +364,7 @@ export default function App() {
   );
 
   const stopVoiceSession = useCallback(async () => {
+    isSessionReadyRef.current = false;
     pendingTextQueueRef.current = [];
     activeUserBubbleIdRef.current = null;
     activeAgentBubbleIdRef.current = null;
@@ -382,7 +387,6 @@ export default function App() {
 
     setConnectionState('disconnected');
     setVadState('idle');
-    setDbLevel(-60);
     setIsMuted(false);
   }, []);
 
@@ -401,16 +405,23 @@ export default function App() {
     const engine = new VoiceAudioEngine(
       {
         onAudioChunk: (base64Pcm16k) => {
-          if (wsRef.current?.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({ type: 'audio', data: base64Pcm16k })
-            );
+          const sock = wsRef.current;
+          // Only stream after Gemini Live setup completes and avoid WebSocket backlog during network dips
+          if (
+            isSessionReadyRef.current &&
+            sock &&
+            sock.readyState === WebSocket.OPEN &&
+            sock.bufferedAmount < 65536
+          ) {
+            sock.send(JSON.stringify({ type: 'audio', data: base64Pcm16k }));
           }
         },
-        onVadChange: (speaking, db) => {
-          setDbLevel(db);
+        onVadChange: (speaking) => {
           if (!isAgentSpeakingRef.current && !isToolRunningRef.current) {
-            setVadState(speaking ? 'speech' : 'listening');
+            setVadState((prev) => {
+              const next: VadActivityState = speaking ? 'speech' : 'listening';
+              return prev === next ? prev : next;
+            });
           }
         },
         onBargeIn: () => {
@@ -471,6 +482,7 @@ export default function App() {
         const msg = JSON.parse(event.data);
 
         if (msg.type === 'ready') {
+          isSessionReadyRef.current = true;
           setConnectionState('connected');
           setVadState('listening');
           appendTranscript({
@@ -910,7 +922,7 @@ export default function App() {
                     onOpenAvatarSettings={() => setActiveView('agent-settings')}
                     connectionState={connectionState}
                     vadState={vadState}
-                    dbLevel={dbLevel}
+                    getDbLevel={getDbLevel}
                     isMuted={isMuted}
                     language={language}
                     inputAnalyser={audioEngineRef.current?.getInputAnalyser() ?? null}

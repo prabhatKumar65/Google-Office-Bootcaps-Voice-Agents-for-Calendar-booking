@@ -22,7 +22,7 @@ interface VoiceAgentConsoleProps {
   onOpenAvatarSettings: () => void;
   connectionState: AgentConnectionState;
   vadState: VadActivityState;
-  dbLevel: number;
+  getDbLevel: () => number;
   isMuted: boolean;
   language: LanguageCode;
   inputAnalyser: AnalyserNode | null;
@@ -61,7 +61,7 @@ export const VoiceAgentConsole: React.FC<VoiceAgentConsoleProps> = ({
   onOpenAvatarSettings,
   connectionState,
   vadState,
-  dbLevel,
+  getDbLevel,
   isMuted,
   language,
   inputAnalyser,
@@ -131,7 +131,7 @@ export const VoiceAgentConsole: React.FC<VoiceAgentConsoleProps> = ({
         <WaveformVisualizer
           connectionState={connectionState}
           vadState={vadState}
-          dbLevel={dbLevel}
+          getDbLevel={getDbLevel}
           isMuted={isMuted}
           inputAnalyser={inputAnalyser}
           outputAnalyser={outputAnalyser}

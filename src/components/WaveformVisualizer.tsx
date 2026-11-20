@@ -4,7 +4,7 @@ import type { AgentConnectionState, VadActivityState } from '../types/calendar';
 interface WaveformVisualizerProps {
   connectionState: AgentConnectionState;
   vadState: VadActivityState;
-  dbLevel: number;
+  getDbLevel: () => number;
   isMuted: boolean;
   inputAnalyser: AnalyserNode | null;
   outputAnalyser: AnalyserNode | null;
@@ -13,12 +13,13 @@ interface WaveformVisualizerProps {
 export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
   connectionState,
   vadState,
-  dbLevel,
+  getDbLevel,
   isMuted,
   inputAnalyser,
   outputAnalyser,
 }) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const dbSpanRef = useRef<HTMLSpanElement | null>(null);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -27,11 +28,20 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
     if (!ctx) return;
 
     let rafId = 0;
+    let lastDbUpdateMs = 0;
     const barCount = 44;
     const smoothed = new Float32Array(barCount);
     const freqBuf = new Uint8Array(128);
 
-    const draw = () => {
+    const draw = (nowMs: number) => {
+      if (dbSpanRef.current && nowMs - lastDbUpdateMs >= 160) {
+        lastDbUpdateMs = nowMs;
+        dbSpanRef.current.textContent =
+          connectionState === 'connected' && !isMuted
+            ? `${getDbLevel().toFixed(0)} dBFS`
+            : '— dBFS';
+      }
+
       const dpr = window.devicePixelRatio || 1;
       const width = canvas.clientWidth;
       const height = canvas.clientHeight;
@@ -63,7 +73,6 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
       const centerY = height / 2;
 
       for (let i = 0; i < barCount; i++) {
-        // Mirror around center for balanced acoustic symmetry
         const distFromCenter = Math.abs(i - (barCount - 1) / 2) / (barCount / 2);
         const binIdx = Math.min(
           freqBuf.length - 1,
@@ -105,7 +114,7 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
 
     rafId = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(rafId);
-  }, [connectionState, vadState, isMuted, inputAnalyser, outputAnalyser]);
+  }, [connectionState, vadState, isMuted, inputAnalyser, outputAnalyser, getDbLevel]);
 
   const statusText =
     connectionState !== 'connected'
@@ -139,10 +148,11 @@ export const WaveformVisualizer: React.FC<WaveformVisualizerProps> = ({
     <div className="rounded-xl border border-slate-200 bg-slate-50/70 px-5 py-4">
       <div className="mb-3 flex items-center justify-between gap-4">
         <span className={`text-xs font-medium ${statusTone}`}>{statusText}</span>
-        <span className="font-mono text-xs text-slate-500 tabular-nums">
-          {connectionState === 'connected' && !isMuted
-            ? `${dbLevel.toFixed(0)} dBFS`
-            : '— dBFS'}
+        <span
+          ref={dbSpanRef}
+          className="font-mono text-xs text-slate-500 tabular-nums"
+        >
+          — dBFS
         </span>
       </div>
       <canvas

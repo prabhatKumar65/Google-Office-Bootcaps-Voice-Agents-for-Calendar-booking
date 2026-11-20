@@ -13,11 +13,20 @@ export interface AudioEngineOptions {
   noiseGateEnabled: boolean;
 }
 
-const SENSITIVITY_THRESHOLDS: Record<VadSensitivity, { rms: number; hangoverMs: number }> = {
-  high: { rms: 0.008, hangoverMs: 420 },
-  balanced: { rms: 0.016, hangoverMs: 480 },
-  low: { rms: 0.03, hangoverMs: 560 },
+const SENSITIVITY_THRESHOLDS: Record<
+  VadSensitivity,
+  { rms: number; hangoverMs: number; bargeInRms: number; bargeInFrames: number }
+> = {
+  high: { rms: 0.007, hangoverMs: 360, bargeInRms: 0.022, bargeInFrames: 2 },
+  balanced: { rms: 0.012, hangoverMs: 420, bargeInRms: 0.028, bargeInFrames: 2 },
+  low: { rms: 0.024, hangoverMs: 520, bargeInRms: 0.045, bargeInFrames: 3 },
 };
+
+// Snappy 45ms lead-in absorbs WebSocket jitter without delaying response start
+const PLAYBACK_JITTER_BUFFER_SEC = 0.045;
+const OUTPUT_IDLE_DEBOUNCE_MS = 160;
+// Brief 180ms startup skip avoids initial mic hardware click without missing early speech
+const MIC_WARMUP_MS = 180;
 
 const WORKLET_CODE = `
 class PcmCaptureProcessor extends AudioWorkletProcessor {
@@ -89,12 +98,22 @@ export class VoiceAudioEngine {
 
   private activeSources = new Set<AudioBufferSourceNode>();
   private nextStartTime = 0;
+  private outputIdleTimer: ReturnType<typeof setTimeout> | null = null;
+  private isOutputReportingPlaying = false;
+
   private isMuted = false;
   private isSpeechActive = false;
   private lastSpeechTime = 0;
+  private startedAtMs = 0;
   private noiseFloorRms = 0.004;
+  private currentDbLevel = -60;
+  private consecutiveBargeInFrames = 0;
   private preRollQueue: string[] = [];
-  private readonly maxPreRollFrames = 4;
+  private readonly maxPreRollFrames = 8;
+
+  // Gentle ~60Hz high-pass filter preserves full human vocal clarity while stripping DC rumble
+  private hpPrevIn = 0;
+  private hpPrevOut = 0;
 
   private options: AudioEngineOptions;
   private callbacks: AudioEngineCallbacks;
@@ -110,10 +129,18 @@ export class VoiceAudioEngine {
 
   public setMuted(muted: boolean) {
     this.isMuted = muted;
-    if (muted && this.isSpeechActive) {
-      this.isSpeechActive = false;
-      this.callbacks.onVadChange(false, -60);
+    this.consecutiveBargeInFrames = 0;
+    if (muted) {
+      this.currentDbLevel = -60;
+      if (this.isSpeechActive) {
+        this.isSpeechActive = false;
+        this.callbacks.onVadChange(false, -60);
+      }
     }
+  }
+
+  public getCurrentDbLevel(): number {
+    return this.currentDbLevel;
   }
 
   public getInputAnalyser(): AnalyserNode | null {
@@ -125,7 +152,7 @@ export class VoiceAudioEngine {
   }
 
   public isAgentSpeaking(): boolean {
-    return this.activeSources.size > 0;
+    return this.activeSources.size > 0 || this.isOutputReportingPlaying;
   }
 
   public async start(): Promise<void> {
@@ -143,6 +170,12 @@ export class VoiceAudioEngine {
     await this.inputCtx.resume();
     await this.outputCtx.resume();
 
+    this.startedAtMs = performance.now();
+    this.noiseFloorRms = 0.004;
+    this.hpPrevIn = 0;
+    this.hpPrevOut = 0;
+    this.consecutiveBargeInFrames = 0;
+
     this.inputAnalyser = this.inputCtx.createAnalyser();
     this.inputAnalyser.fftSize = 256;
     this.inputAnalyser.smoothingTimeConstant = 0.72;
@@ -159,9 +192,9 @@ export class VoiceAudioEngine {
     silentGain.gain.value = 0;
     silentGain.connect(this.inputCtx.destination);
 
-    // Accumulate ~1024 samples at 16kHz (~64ms) before sending for low latency & steady framing
+    // 512 samples at 16kHz (32ms) for fast voice onset and low-latency streaming
     let pending16k = new Float32Array(0);
-    const frameTarget = 1024;
+    const frameTarget = 512;
 
     const handleRawFloatFrame = (rawFrame: Float32Array) => {
       if (this.isMuted || !this.inputCtx) return;
@@ -194,7 +227,7 @@ export class VoiceAudioEngine {
       this.sourceNode.connect(this.workletNode);
       this.workletNode.connect(silentGain);
     } catch {
-      this.scriptNode = this.inputCtx.createScriptProcessor(2048, 1, 1);
+      this.scriptNode = this.inputCtx.createScriptProcessor(1024, 1, 1);
       this.scriptNode.onaudioprocess = (e) => {
         handleRawFloatFrame(e.inputBuffer.getChannelData(0));
       };
@@ -203,42 +236,86 @@ export class VoiceAudioEngine {
     }
   }
 
-  private processVadAndEmit(chunk: Float32Array) {
+  private applyHighPassFilter(input: Float32Array): Float32Array {
+    // Gentle ~60Hz high-pass filter (alpha=0.976 at 16kHz)
+    const alpha = 0.976;
+    const out = new Float32Array(input.length);
+    let prevIn = this.hpPrevIn;
+    let prevOut = this.hpPrevOut;
+    for (let i = 0; i < input.length; i++) {
+      const x = input[i];
+      const y = alpha * (prevOut + x - prevIn);
+      out[i] = y;
+      prevIn = x;
+      prevOut = y;
+    }
+    this.hpPrevIn = prevIn;
+    this.hpPrevOut = prevOut;
+    return out;
+  }
+
+  private processVadAndEmit(rawChunk: Float32Array) {
+    const chunk = this.applyHighPassFilter(rawChunk);
     let sumSq = 0;
     for (let i = 0; i < chunk.length; i++) {
       sumSq += chunk[i] * chunk[i];
     }
     const rms = Math.sqrt(sumSq / chunk.length);
     const db = Math.max(-60, Math.min(0, 20 * Math.log10(rms + 1e-6)));
+    this.currentDbLevel = db;
 
-    const config = SENSITIVITY_THRESHOLDS[this.options.sensitivity];
-    const dynamicThreshold = Math.max(config.rms, this.noiseFloorRms * 2.4);
     const now = performance.now();
 
-    if (rms >= dynamicThreshold) {
-      const wasSpeaking = this.isSpeechActive;
-      this.isSpeechActive = true;
-      this.lastSpeechTime = now;
-      this.callbacks.onVadChange(true, db);
+    if (now - this.startedAtMs < MIC_WARMUP_MS) {
+      this.noiseFloorRms = this.noiseFloorRms * 0.75 + Math.min(rms, 0.03) * 0.25;
+      return;
+    }
 
-      // Instant client-side barge-in when user starts speaking over agent audio
-      if (!wasSpeaking && this.options.bargeInEnabled && this.isAgentSpeaking()) {
-        this.stopOutputPlayback();
-        this.callbacks.onBargeIn();
+    const config = SENSITIVITY_THRESHOLDS[this.options.sensitivity];
+    const dynamicThreshold = Math.max(config.rms, this.noiseFloorRms * 2.2);
+    const agentSpeakingNow = this.isAgentSpeaking();
+
+    if (agentSpeakingNow) {
+      const bargeThreshold = Math.max(config.bargeInRms, dynamicThreshold * 2.0);
+      if (rms >= bargeThreshold) {
+        this.consecutiveBargeInFrames += 1;
+        if (
+          this.options.bargeInEnabled &&
+          this.consecutiveBargeInFrames >= config.bargeInFrames
+        ) {
+          this.consecutiveBargeInFrames = 0;
+          this.isSpeechActive = true;
+          this.lastSpeechTime = now;
+          this.stopOutputPlayback();
+          this.callbacks.onBargeIn();
+          this.callbacks.onVadChange(true, db);
+        }
+      } else {
+        this.consecutiveBargeInFrames = 0;
       }
     } else {
-      // Slowly adapt ambient noise floor during non-speech
-      this.noiseFloorRms = this.noiseFloorRms * 0.96 + rms * 0.04;
-      if (this.isSpeechActive && now - this.lastSpeechTime > config.hangoverMs) {
-        this.isSpeechActive = false;
+      this.consecutiveBargeInFrames = 0;
+      const prevSpeechState = this.isSpeechActive;
+
+      if (rms >= dynamicThreshold) {
+        this.isSpeechActive = true;
+        this.lastSpeechTime = now;
+      } else {
+        this.noiseFloorRms = this.noiseFloorRms * 0.96 + Math.min(rms, 0.025) * 0.04;
+        if (this.isSpeechActive && now - this.lastSpeechTime > config.hangoverMs) {
+          this.isSpeechActive = false;
+        }
       }
-      this.callbacks.onVadChange(this.isSpeechActive, db);
+
+      if (this.isSpeechActive !== prevSpeechState) {
+        this.callbacks.onVadChange(this.isSpeechActive, db);
+      }
     }
 
     const base64 = float32ToBase64Pcm16(chunk);
 
     if (this.options.noiseGateEnabled) {
-      if (this.isSpeechActive) {
+      if (this.isSpeechActive || this.consecutiveBargeInFrames > 0) {
         while (this.preRollQueue.length > 0) {
           const pre = this.preRollQueue.shift()!;
           this.callbacks.onAudioChunk(pre);
@@ -262,6 +339,20 @@ export class VoiceAudioEngine {
     }
 
     const float32 = base64Pcm16ToFloat32(base64Pcm24k);
+    if (float32.length === 0) return;
+
+    const now = this.outputCtx.currentTime;
+    const isFreshBurst = this.nextStartTime < now + 0.005;
+
+    if (isFreshBurst) {
+      // Smooth 1.5ms ramp-in prevents startup click without muting any audio
+      const fadeSamples = Math.min(36, float32.length);
+      for (let i = 0; i < fadeSamples; i++) {
+        float32[i] *= i / fadeSamples;
+      }
+      this.nextStartTime = now + PLAYBACK_JITTER_BUFFER_SEC;
+    }
+
     const buffer = this.outputCtx.createBuffer(1, float32.length, 24000);
     buffer.getChannelData(0).set(float32);
 
@@ -269,21 +360,27 @@ export class VoiceAudioEngine {
     source.buffer = buffer;
     source.connect(this.outputAnalyser);
 
-    const now = this.outputCtx.currentTime;
-    if (this.nextStartTime < now) {
-      this.nextStartTime = now + 0.02;
+    if (this.outputIdleTimer) {
+      clearTimeout(this.outputIdleTimer);
+      this.outputIdleTimer = null;
     }
 
-    const wasEmpty = this.activeSources.size === 0;
     this.activeSources.add(source);
-    if (wasEmpty) {
+    if (!this.isOutputReportingPlaying) {
+      this.isOutputReportingPlaying = true;
       this.callbacks.onOutputStateChange(true);
     }
 
     source.onended = () => {
       this.activeSources.delete(source);
       if (this.activeSources.size === 0) {
-        this.callbacks.onOutputStateChange(false);
+        this.outputIdleTimer = setTimeout(() => {
+          this.outputIdleTimer = null;
+          if (this.activeSources.size === 0 && this.isOutputReportingPlaying) {
+            this.isOutputReportingPlaying = false;
+            this.callbacks.onOutputStateChange(false);
+          }
+        }, OUTPUT_IDLE_DEBOUNCE_MS);
       }
     };
 
@@ -292,6 +389,11 @@ export class VoiceAudioEngine {
   }
 
   public stopOutputPlayback() {
+    if (this.outputIdleTimer) {
+      clearTimeout(this.outputIdleTimer);
+      this.outputIdleTimer = null;
+    }
+
     for (const source of this.activeSources) {
       try {
         source.stop();
@@ -301,18 +403,20 @@ export class VoiceAudioEngine {
       }
     }
     this.activeSources.clear();
-    if (this.outputCtx) {
-      this.nextStartTime = this.outputCtx.currentTime;
-    } else {
-      this.nextStartTime = 0;
+    this.nextStartTime = this.outputCtx ? this.outputCtx.currentTime : 0;
+
+    if (this.isOutputReportingPlaying) {
+      this.isOutputReportingPlaying = false;
+      this.callbacks.onOutputStateChange(false);
     }
-    this.callbacks.onOutputStateChange(false);
   }
 
   public async stop(): Promise<void> {
     this.stopOutputPlayback();
     this.preRollQueue = [];
     this.isSpeechActive = false;
+    this.consecutiveBargeInFrames = 0;
+    this.currentDbLevel = -60;
 
     try {
       this.workletNode?.disconnect();
